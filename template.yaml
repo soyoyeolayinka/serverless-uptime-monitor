@@ -1,0 +1,58 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Scheduled serverless HTTP uptime monitor
+Parameters:
+  AlertEmail: {Type: String, Default: '', Description: Optional SNS subscription email}
+  ScheduleEnabled: {Type: String, Default: 'false', AllowedValues: ['true', 'false']}
+  TargetsJson: {Type: String, Default: '[{"name":"example","url":"https://example.com","expected_status":200,"max_latency_ms":2000}]'}
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
+Resources:
+  ChecksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: check_id, AttributeType: S}]
+      KeySchema: [{AttributeName: check_id, KeyType: HASH}]
+      TimeToLiveSpecification: {AttributeName: expires_at, Enabled: true}
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties: {KmsMasterKeyId: alias/aws/sns}
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties: {Protocol: email, Endpoint: !Ref AlertEmail, TopicArn: !Ref AlertTopic}
+  MonitorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      MemorySize: 128
+      Timeout: 30
+      ReservedConcurrentExecutions: 1
+      Environment: {Variables: {TABLE_NAME: !Ref ChecksTable, TARGETS_JSON: !Ref TargetsJson, METRIC_NAMESPACE: Portfolio/UptimeMonitor}}
+      Policies:
+        - DynamoDBCrudPolicy: {TableName: !Ref ChecksTable}
+        - CloudWatchPutMetricPolicy: {}
+      Events:
+        Schedule: {Type: Schedule, Properties: {Schedule: rate(5 minutes), Enabled: !Ref ScheduleEnabled}}
+  MonitorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: {LogGroupName: !Sub '/aws/lambda/${MonitorFunction}', RetentionInDays: 7}
+  AvailabilityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Endpoint availability check failed
+      Namespace: Portfolio/UptimeMonitor
+      MetricName: Availability
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref AlertTopic]
+Outputs:
+  AlertTopicArn: {Value: !Ref AlertTopic}
+  ChecksTableName: {Value: !Ref ChecksTable}

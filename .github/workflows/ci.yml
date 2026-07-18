@@ -1,0 +1,13 @@
+name: CI
+on: [push, pull_request]
+permissions: {contents: read}
+jobs:
+  test-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/setup-sam@v2
+      - run: pip install boto3
+      - run: python -m unittest discover -s tests -v
+      - run: sam validate --lint
+      - run: sam build
